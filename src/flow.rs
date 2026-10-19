@@ -11,8 +11,8 @@ use crate::api::{Api, ApiError};
 /// The base model trained on when none is given.
 pub const DEFAULT_ENCODER: &str = "ts-moberto-150m";
 
-fn content_type(path: &Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+fn content_type(name: &str) -> &'static str {
+    match Path::new(name).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("csv") => "text/csv",
         Some("tsv") => "text/tab-separated-values",
         Some("json") => "application/json",
@@ -32,14 +32,54 @@ fn content_type(path: &Path) -> &'static str {
 /// A public source to train from.
 pub enum Remote {
     /// A Hugging Face dataset and the files of it to use.
-    Hf { repo: String, files: Vec<String> },
-    Github { repo: String },
+    Hf {
+        repo: String,
+        files: Vec<String>,
+    },
+    Github {
+        repo: String,
+    },
+}
+
+/// A file to send: one on this machine, or its contents (what an assistant passes to the remote MCP server).
+pub enum File {
+    Path(PathBuf),
+    Inline { name: String, bytes: Vec<u8> },
+}
+
+impl File {
+    fn name(&self) -> Result<String> {
+        match self {
+            File::Path(p) => Ok(p.file_name().and_then(|n| n.to_str()).context("file name")?.to_owned()),
+            File::Inline { name, .. } => Ok(name.clone()),
+        }
+    }
+
+    fn size(&self) -> Result<u64> {
+        match self {
+            File::Path(p) => {
+                let meta = std::fs::metadata(p).with_context(|| format!("cannot read {}", p.display()))?;
+                if !meta.is_file() {
+                    bail!("{} is not a file", p.display());
+                }
+                Ok(meta.len())
+            }
+            File::Inline { bytes, .. } => Ok(bytes.len() as u64),
+        }
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>> {
+        match self {
+            File::Path(p) => Ok(std::fs::read(p)?),
+            File::Inline { bytes, .. } => Ok(bytes.clone()),
+        }
+    }
 }
 
 pub struct NewDataset {
     pub name: String,
     pub goal: Option<String>,
-    pub files: Vec<PathBuf>,
+    pub files: Vec<File>,
     pub remotes: Vec<Remote>,
     pub questions: Vec<String>,
     pub anonymize: bool,
@@ -52,12 +92,8 @@ pub async fn create_dataset(api: &Api, d: NewDataset, mut progress: impl FnMut(&
     }
     let mut files = Vec::new();
     for f in &d.files {
-        let meta = std::fs::metadata(f).with_context(|| format!("cannot read {}", f.display()))?;
-        if !meta.is_file() {
-            bail!("{} is not a file", f.display());
-        }
-        let filename = f.file_name().and_then(|n| n.to_str()).context("file name")?.to_owned();
-        files.push(json!({ "filename": filename, "content_type": content_type(f), "size": meta.len() }));
+        let filename = f.name()?;
+        files.push(json!({ "filename": filename, "content_type": content_type(&filename), "size": f.size()? }));
     }
     let remotes: Vec<Value> = d
         .remotes
@@ -73,10 +109,14 @@ pub async fn create_dataset(api: &Api, d: NewDataset, mut progress: impl FnMut(&
     }
     let created = api.post("/v1/datasets", body).await?;
     let id = created["id"].as_str().context("no dataset id in the answer")?.to_owned();
-    for (path, up) in d.files.iter().zip(created["uploads"].as_array().cloned().unwrap_or_default()) {
-        progress(&format!("uploading {}", path.display()));
-        api.upload(up["url"].as_str().context("upload url")?, std::fs::read(path)?).await?;
-        api.post(&format!("/v1/datasets/{id}/files/{}/complete", up["file_id"].as_str().context("file id")?), json!({})).await?;
+    for (file, up) in d.files.iter().zip(created["uploads"].as_array().cloned().unwrap_or_default()) {
+        progress(&format!("uploading {}", file.name()?));
+        api.upload(up["url"].as_str().context("upload url")?, file.bytes()?).await?;
+        api.post(
+            &format!("/v1/datasets/{id}/files/{}/complete", up["file_id"].as_str().context("file id")?),
+            json!({}),
+        )
+        .await?;
     }
     Ok(id)
 }
@@ -154,7 +194,8 @@ pub async fn quote(api: &Api, dataset: &str, encoder: &str) -> Result<Value> {
     let encoders = api.get("/v1/encoders").await?;
     let base = encoders.as_array().and_then(|es| es.iter().find(|e| e["id"] == encoder)).cloned();
     let Some(base) = base else {
-        let ids: Vec<&str> = encoders.as_array().map(|es| es.iter().filter_map(|e| e["id"].as_str()).collect()).unwrap_or_default();
+        let ids: Vec<&str> =
+            encoders.as_array().map(|es| es.iter().filter_map(|e| e["id"].as_str()).collect()).unwrap_or_default();
         bail!("unknown base model {encoder}; the base models are: {}", ids.join(", "));
     };
     if base["available"] != true {
@@ -181,6 +222,11 @@ pub async fn start(api: &Api, dataset: &str, encoder: &str) -> Result<Value> {
     api.post(&format!("/v1/datasets/{dataset}/models"), json!({ "encoder": encoder })).await
 }
 
+/// The package's files and their download links (valid for a while), for a caller that cannot write to this machine.
+pub async fn download_links(api: &Api, model: &str) -> Result<Value> {
+    api.get(&format!("/v1/models/{model}/files")).await
+}
+
 /// Saves the model package (decision_ai.json, tokenizer.json, onnx/model_8bit.onnx) under `dir`.
 pub async fn download(api: &Api, model: &str, dir: &Path) -> Result<Vec<PathBuf>> {
     let files = api.get(&format!("/v1/models/{model}/files")).await?;
@@ -205,7 +251,9 @@ pub fn describe(t: &Value) -> String {
         "wait" => "working on it".to_owned(),
         "start_over" => format!("the data could not be read: {}", t["dataset"]["error"].as_str().unwrap_or("")),
         "structure" => "ready to be structured: `typestrict structure`".to_owned(),
-        "pick_decisions" => "pick the decisions to build: `typestrict review` then `typestrict structure --question ...`".to_owned(),
+        "pick_decisions" => {
+            "pick the decisions to build: `typestrict review` then `typestrict structure --question ...`".to_owned()
+        }
         "label_examples" => "label the test examples: `typestrict label`".to_owned(),
         "start_training" => "ready to train: `typestrict run`".to_owned(),
         "retry" => "the training failed and the credit came back: run it again".to_owned(),
@@ -226,9 +274,9 @@ mod tests {
 
     #[test]
     fn files_go_up_with_their_type() {
-        assert_eq!(content_type(Path::new("a/Tickets.CSV")), "text/csv");
-        assert_eq!(content_type(Path::new("pack.zip")), "application/zip");
-        assert_eq!(content_type(Path::new("notes")), "application/octet-stream");
+        assert_eq!(content_type("a/Tickets.CSV"), "text/csv");
+        assert_eq!(content_type("pack.zip"), "application/zip");
+        assert_eq!(content_type("notes"), "application/octet-stream");
     }
 
     #[test]

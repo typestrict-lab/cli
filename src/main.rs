@@ -1,11 +1,6 @@
 //! typestrict: train, follow and download typestrict decision models from the terminal; `typestrict mcp` is the same flow
 //! as an MCP server (stdio) for AI assistants. Docs: https://docs.typestrict.ai/cli
 
-mod api;
-mod config;
-mod flow;
-mod mcp;
-
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -14,17 +9,22 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
+use typestrict::{config, flow, mcp};
 
-use crate::api::Api;
+use typestrict::api::Api;
 
 #[derive(Parser)]
-#[command(name = "typestrict", version, about = "Train decision models that beat Jev, or the credit comes back. Docs: https://docs.typestrict.ai/cli")]
+#[command(
+    name = "typestrict",
+    version,
+    about = "Train decision models that beat Jev, or the credit comes back. Docs: https://docs.typestrict.ai/cli"
+)]
 struct Cli {
     /// Print the API's answers as JSON, for scripts.
     #[arg(long, global = true)]
     json: bool,
     /// The API to talk to.
-    #[arg(long, global = true, env = "TYPESTRICT_API_URL", default_value = api::DEFAULT_URL, hide_default_value = true)]
+    #[arg(long, global = true, env = "TYPESTRICT_API_URL", default_value = typestrict::api::DEFAULT_URL, hide_default_value = true)]
     api_url: String,
     #[command(subcommand)]
     command: Command,
@@ -162,7 +162,11 @@ async fn watch(api: &Api, id: &str, json: bool) -> Result<ExitCode> {
     })
     .await?;
     print(json, &t, || {});
-    Ok(if matches!(t["next_action"].as_str(), Some("start_over" | "retry" | "expired")) { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+    Ok(if matches!(t["next_action"].as_str(), Some("start_over" | "retry" | "expired")) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 async fn run(cli: Cli) -> Result<ExitCode> {
@@ -186,7 +190,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             let mut remotes = Vec::new();
             for h in hf {
                 let (repo, paths) = h.split_once(':').context("--hf takes org/name:file,file")?;
-                remotes.push(flow::Remote::Hf { repo: repo.to_owned(), files: paths.split(',').map(str::to_owned).collect() });
+                remotes.push(flow::Remote::Hf {
+                    repo: repo.to_owned(),
+                    files: paths.split(',').map(str::to_owned).collect(),
+                });
             }
             remotes.extend(github.iter().map(|r| flow::Remote::Github { repo: r.clone() }));
             let name = name
@@ -194,7 +201,14 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 .or_else(|| files.first().and_then(|f| f.file_stem()).and_then(|s| s.to_str()).map(str::to_owned))
                 .or_else(|| hf.first().or(github.first()).map(|r| r.split(':').next().unwrap_or(r).to_owned()))
                 .context("give a file, a public source or --name")?;
-            let new = flow::NewDataset { name, goal: goal.clone(), files: files.clone(), remotes, questions: questions.clone(), anonymize: !no_anonymize };
+            let new = flow::NewDataset {
+                name,
+                goal: goal.clone(),
+                files: files.iter().cloned().map(flow::File::Path).collect(),
+                remotes,
+                questions: questions.clone(),
+                anonymize: !no_anonymize,
+            };
             let id = flow::create_dataset(&api, new, |m| {
                 if !json {
                     println!("{m}");
@@ -202,7 +216,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             })
             .await?;
             if !json {
-                println!("Training {id} started: reading and masking the data. Follow it with `typestrict status {id} --watch`.");
+                println!(
+                    "Training {id} started: reading and masking the data. Follow it with `typestrict status {id} --watch`."
+                );
             }
             if *follow {
                 return watch(&api, &id, json).await;
@@ -243,7 +259,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Suggest { dataset } => {
             flow::suggest(&api(&cli)?, dataset).await?;
-            print(json, &json!({ "dataset": dataset, "status": "suggesting" }), || println!("The agent is looking for decisions. Then `typestrict review {dataset}`."));
+            print(json, &json!({ "dataset": dataset, "status": "suggesting" }), || {
+                println!("The agent is looking for decisions. Then `typestrict review {dataset}`.")
+            });
         }
         Command::Label { dataset } => label(&api(&cli)?, dataset).await?,
         Command::Encoders => {
@@ -264,7 +282,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             let api = api(&cli)?;
             let q = flow::quote(&api, dataset, base).await?;
             if q["enough"] != true {
-                bail!("not enough credits ({} of {}): buy more at https://typestrict.ai/billing", q["balance"], q["cost_credits"]);
+                bail!(
+                    "not enough credits ({} of {}): buy more at https://typestrict.ai/billing",
+                    q["balance"],
+                    q["cost_credits"]
+                );
             }
             if !yes {
                 let answer = ask(&format!(
@@ -284,7 +306,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             if *follow {
                 return watch(&api, &id, json).await;
             }
-            print(json, &m, || println!("Training {id} (v{}) started. Follow it with `typestrict status {id} --watch`.", m["version"]));
+            print(json, &m, || {
+                println!("Training {id} (v{}) started. Follow it with `typestrict status {id} --watch`.", m["version"])
+            });
         }
         Command::Result { model } => {
             let m = api(&cli)?.get(&format!("/v1/models/{model}")).await?;
@@ -293,7 +317,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Command::Pull { model, dir } => {
             let api = api(&cli)?;
             let m = api.get(&format!("/v1/models/{model}")).await?;
-            let dir = dir.clone().unwrap_or_else(|| PathBuf::from(format!("{}-v{}", m["model"]["name"].as_str().unwrap_or("model"), m["model"]["version"])));
+            let dir = dir.clone().unwrap_or_else(|| {
+                PathBuf::from(format!("{}-v{}", m["model"]["name"].as_str().unwrap_or("model"), m["model"]["version"]))
+            });
             let files = flow::download(&api, model, &dir).await?;
             print(json, &json!({ "files": files }), || {
                 for f in &files {
@@ -325,7 +351,11 @@ fn review(d: &Value) {
     let per = &s["stats"]["per_label"];
     for l in spec["labels"].as_array().cloned().unwrap_or_default() {
         let name = l["name"].as_str().unwrap_or("");
-        println!("  {name:<24} {:>8} examples  {}", per[name].as_i64().unwrap_or(0), l["description"].as_str().unwrap_or(""));
+        println!(
+            "  {name:<24} {:>8} examples  {}",
+            per[name].as_i64().unwrap_or(0),
+            l["description"].as_str().unwrap_or("")
+        );
     }
     if let Some(tasks) = spec["tasks"].as_array() {
         println!("\n{} decisions to build:", tasks.len());
@@ -349,8 +379,17 @@ async fn label(api: &Api, dataset: &str) -> Result<()> {
             println!("Every example is labeled: `typestrict run {dataset}`.");
             return Ok(());
         };
-        let labels: Vec<String> = next["spec"]["labels"].as_array().map(|ls| ls.iter().filter_map(|l| l["name"].as_str().map(str::to_owned)).collect()).unwrap_or_default();
-        println!("\n[{} of {}] {}\n{}", next["done"], next["total"], next["spec"]["question"].as_str().unwrap_or(""), task["state"].as_str().unwrap_or(""));
+        let labels: Vec<String> = next["spec"]["labels"]
+            .as_array()
+            .map(|ls| ls.iter().filter_map(|l| l["name"].as_str().map(str::to_owned)).collect())
+            .unwrap_or_default();
+        println!(
+            "\n[{} of {}] {}\n{}",
+            next["done"],
+            next["total"],
+            next["spec"]["question"].as_str().unwrap_or(""),
+            task["state"].as_str().unwrap_or("")
+        );
         for (i, l) in labels.iter().enumerate() {
             let guess = if task["suggestion"].as_str() == Some(l) { "  (suggested)" } else { "" };
             println!("  {}. {l}{guess}", i + 1);
@@ -361,7 +400,11 @@ async fn label(api: &Api, dataset: &str) -> Result<()> {
             "q" => return Ok(()),
             "s" | "" => after = Some(id),
             a => {
-                let chosen = a.parse::<usize>().ok().and_then(|n| labels.get(n.wrapping_sub(1)).cloned()).or_else(|| labels.iter().find(|l| l.as_str() == a).cloned());
+                let chosen = a
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|n| labels.get(n.wrapping_sub(1)).cloned())
+                    .or_else(|| labels.iter().find(|l| l.as_str() == a).cloned());
                 match chosen {
                     Some(l) => flow::save_label(api, dataset, id, &l).await?,
                     None => println!("Not an option."),

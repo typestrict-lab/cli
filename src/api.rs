@@ -46,6 +46,11 @@ impl Api {
         Ok(Self { base: base.trim_end_matches('/').to_owned(), key: key.to_owned(), http })
     }
 
+    /// The same API with another key (or access token): the remote MCP server calls it as each request's user.
+    pub fn with_key(&self, key: &str) -> Self {
+        Self { key: key.to_owned(), ..self.clone() }
+    }
+
     pub async fn get(&self, path: &str) -> Result<Value> {
         self.call(Method::GET, path, None).await
     }

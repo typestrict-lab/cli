@@ -16,7 +16,9 @@ pub fn key() -> Result<String> {
     }
     match std::fs::read_to_string(path()?) {
         Ok(k) if !k.trim().is_empty() => Ok(k.trim().to_owned()),
-        _ => bail!("no API key: run `typestrict login`, or set TYPESTRICT_API_KEY (create a key at https://typestrict.ai/settings#api-keys)"),
+        _ => bail!(
+            "no API key: run `typestrict login`, or set TYPESTRICT_API_KEY (create a key at https://typestrict.ai/settings#api-keys)"
+        ),
     }
 }
 

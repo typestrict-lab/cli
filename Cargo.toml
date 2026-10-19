@@ -1,6 +1,6 @@
 [package]
 name = "typestrict"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Train, follow and download typestrict decision models from the terminal, and the typestrict MCP server for AI assistants."
@@ -12,6 +12,7 @@ readme = "README.md"
 anyhow = "=1.0.104"
 clap = { version = "=4.6.7", features = ["derive", "env"] }
 dirs = "=7.0.0"
+http = "=1.5.0"
 reqwest = { version = "=0.13.5", default-features = false, features = ["json", "rustls", "stream"] }
 rmcp = { version = "=3.5.0", features = ["server", "transport-io", "macros"] }
 rpassword = "=7.5.4"

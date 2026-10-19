@@ -28,12 +28,21 @@ exits with 1 if it failed. `suggest`, `encoders` and `credits` do what they say.
 
 ## For AI assistants
 
-`typestrict mcp` is the typestrict MCP server over stdio: the same flow as tools, for Claude Code, Cursor, Codex,
-GitHub Copilot, Windsurf and Gemini CLI. Starting a training always takes a quote first and the user's confirmation.
+The same flow as MCP tools, two ways:
+
+- **Remote:** `https://api.typestrict.ai/mcp`, with OAuth (sign in to typestrict once) or an API key. Nothing to
+  install: ChatGPT, Claude, Claude Code, Codex, Cursor, GitHub Copilot, Antigravity, Devin Desktop and others.
+- **Local:** `typestrict mcp`, over stdio with your API key, when the assistant should read and save files on your
+  machine.
+
+Starting a training always takes a quote first and the user's confirmation.
 
 ```bash
-claude mcp add typestrict -- typestrict mcp
+claude mcp add --transport http typestrict https://api.typestrict.ai/mcp   # remote
+claude mcp add typestrict -- typestrict mcp                                # local
 ```
+
+This crate is also a library: the typestrict API serves these same tools remotely (`typestrict::mcp::Server::remote`).
 
 The setup for every assistant: https://docs.typestrict.ai/agents. Skills: https://github.com/typestrict-lab/skills.
 
