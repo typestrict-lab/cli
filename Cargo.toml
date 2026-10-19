@@ -1,0 +1,26 @@
+[package]
+name = "typestrict"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Train, follow and download typestrict decision models from the terminal, and the typestrict MCP server for AI assistants."
+repository = "https://github.com/typestrict-lab/cli"
+homepage = "https://docs.typestrict.ai/cli"
+readme = "README.md"
+
+[dependencies]
+anyhow = "=1.0.104"
+clap = { version = "=4.6.7", features = ["derive", "env"] }
+dirs = "=7.0.0"
+reqwest = { version = "=0.13.5", default-features = false, features = ["json", "rustls", "stream"] }
+rmcp = { version = "=3.5.0", features = ["server", "transport-io", "macros"] }
+rpassword = "=7.5.4"
+schemars = "=1.2.2"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+tokio = { version = "=1.53.2", features = ["macros", "rt-multi-thread", "fs", "io-util", "time"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
