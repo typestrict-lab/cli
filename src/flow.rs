@@ -126,15 +126,36 @@ pub async fn training(api: &Api, id: &str) -> Result<Value> {
     match api.get(&format!("/v1/datasets/{id}")).await {
         Ok(mut d) => {
             d["kind"] = json!("dataset");
-            Ok(d)
+            Ok(compact(d))
         }
         Err(e) if e.downcast_ref::<ApiError>().is_some_and(|a| a.code == "not_found") => {
             let mut m = api.get(&format!("/v1/models/{id}")).await?;
             m["kind"] = json!("model");
-            Ok(m)
+            Ok(compact(m))
         }
         Err(e) => Err(e),
     }
+}
+
+/// What an assistant reads on every poll, without the repeats: the agent's proposal when the built spec is the same
+/// (the SQL came twice), and the other versions as one line each (the current one came twice, whole).
+pub fn compact(mut t: Value) -> Value {
+    if let Some(s) = t.get_mut("structure").and_then(Value::as_object_mut) {
+        // The spec is the plan plus its format version.
+        let mut spec = s.get("spec").cloned().unwrap_or(Value::Null);
+        if let Some(o) = spec.as_object_mut() {
+            o.remove("version");
+        }
+        if s.get("plan").is_some_and(|p| *p == spec) {
+            s.remove("plan");
+        }
+    }
+    if let Some(vs) = t.get_mut("versions").and_then(Value::as_array_mut) {
+        for v in vs.iter_mut() {
+            *v = json!({ "id": v["id"], "version": v["version"], "status": v["status"], "verdict": v["verdict"], "encoder": v["encoder"], "created_at": v["created_at"] });
+        }
+    }
+    t
 }
 
 pub async fn trainings(api: &Api, limit: u32, cursor: Option<&str>) -> Result<Value> {
@@ -270,6 +291,19 @@ pub fn describe(t: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_training_read_drops_the_repeats() {
+        let task = json!({ "kind": "noul", "sql": "SELECT 1" });
+        let t = super::compact(json!({
+            "structure": { "plan": { "explanation": "e", "tasks": [task] }, "spec": { "explanation": "e", "tasks": [task], "version": 2 } },
+            "versions": [{ "id": "a", "version": 1, "status": "done", "verdict": "beats", "encoder": "x", "created_at": "t", "metrics": { "big": 1 } }],
+        }));
+        assert!(t["structure"].get("plan").is_none() && t["structure"]["spec"]["tasks"][0]["sql"] == "SELECT 1");
+        assert!(t["versions"][0].get("metrics").is_none() && t["versions"][0]["verdict"] == "beats");
+        let differs = super::compact(json!({ "structure": { "plan": { "explanation": "new" }, "spec": { "explanation": "old", "version": 2 } } }));
+        assert!(differs["structure"].get("plan").is_some(), "a plan that differs from the spec stays");
+    }
+
     use super::*;
 
     #[test]
