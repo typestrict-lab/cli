@@ -210,8 +210,17 @@ pub async fn save_label(api: &Api, dataset: &str, task: i64, label: &str) -> Res
     Ok(())
 }
 
+/// What the user agrees to when starting: the refund guarantee, or none with `keep_if_loses`.
+pub fn guarantee(keep_if_loses: bool) -> &'static str {
+    if keep_if_loses {
+        "no refund if the model does not beat Jev: it is delivered anyway (keep_if_loses); the credit comes back only if the training fails"
+    } else {
+        "the credit comes back if the model does not beat Jev on the held-out examples, or if the training fails"
+    }
+}
+
 /// What starting a training costs, with the balance and whether the base model can be picked now.
-pub async fn quote(api: &Api, dataset: &str, encoder: &str) -> Result<Value> {
+pub async fn quote(api: &Api, dataset: &str, encoder: &str, keep_if_loses: bool) -> Result<Value> {
     let encoders = api.get("/v1/encoders").await?;
     let base = encoders.as_array().and_then(|es| es.iter().find(|e| e["id"] == encoder)).cloned();
     let Some(base) = base else {
@@ -235,12 +244,17 @@ pub async fn quote(api: &Api, dataset: &str, encoder: &str) -> Result<Value> {
         "cost_credits": credits["per_model"],
         "balance": credits["balance"],
         "enough": credits["balance"].as_i64() >= credits["per_model"].as_i64(),
-        "guarantee": "the credit comes back if the model does not beat Jev on the held-out examples, or if the training fails",
+        "keep_if_loses": keep_if_loses,
+        "guarantee": guarantee(keep_if_loses),
     }))
 }
 
-pub async fn start(api: &Api, dataset: &str, encoder: &str) -> Result<Value> {
-    api.post(&format!("/v1/datasets/{dataset}/models"), json!({ "encoder": encoder })).await
+pub async fn start(api: &Api, dataset: &str, encoder: &str, keep_if_loses: bool) -> Result<Value> {
+    let mut body = json!({ "encoder": encoder });
+    if keep_if_loses {
+        body["options"] = json!({ "keep_if_loses": true });
+    }
+    api.post(&format!("/v1/datasets/{dataset}/models"), body).await
 }
 
 /// The package's files and their download links (valid for a while), for a caller that cannot write to this machine.
@@ -280,6 +294,9 @@ pub fn describe(t: &Value) -> String {
         "retry" => "the training failed and the credit came back: run it again".to_owned(),
         "download" => match t["model"]["verdict"].as_str() {
             Some("beats") => "done, it beats Jev: `typestrict result`, `typestrict pull`".to_owned(),
+            Some("kept") => {
+                "done, it did not beat Jev and was kept as asked: `typestrict result`, `typestrict pull`".to_owned()
+            }
             _ => "done: `typestrict result`, `typestrict pull`".to_owned(),
         },
         "none" => "done; its files are no longer kept".to_owned(),
@@ -300,7 +317,9 @@ mod tests {
         }));
         assert!(t["structure"].get("plan").is_none() && t["structure"]["spec"]["tasks"][0]["sql"] == "SELECT 1");
         assert!(t["versions"][0].get("metrics").is_none() && t["versions"][0]["verdict"] == "beats");
-        let differs = super::compact(json!({ "structure": { "plan": { "explanation": "new" }, "spec": { "explanation": "old", "version": 2 } } }));
+        let differs = super::compact(
+            json!({ "structure": { "plan": { "explanation": "new" }, "spec": { "explanation": "old", "version": 2 } } }),
+        );
         assert!(differs["structure"].get("plan").is_some(), "a plan that differs from the spec stays");
     }
 

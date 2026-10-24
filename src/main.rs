@@ -105,6 +105,9 @@ enum Command {
         /// Do not ask before spending the credit.
         #[arg(long)]
         yes: bool,
+        /// Keep the model even if it does not beat Jev: it is delivered and there is no refund (only a failed training is).
+        #[arg(long)]
+        keep_if_loses: bool,
         /// Follow it until the result.
         #[arg(long)]
         watch: bool,
@@ -278,9 +281,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             let c = api(&cli)?.get("/v1/credits").await?;
             print(json, &c, || println!("{} credits; a training costs {}.", c["balance"], c["per_model"]));
         }
-        Command::Run { dataset, base, yes, watch: follow } => {
+        Command::Run { dataset, base, yes, keep_if_loses, watch: follow } => {
             let api = api(&cli)?;
-            let q = flow::quote(&api, dataset, base).await?;
+            let q = flow::quote(&api, dataset, base, *keep_if_loses).await?;
             if q["enough"] != true {
                 bail!(
                     "not enough credits ({} of {}): buy more at https://typestrict.ai/billing",
@@ -290,18 +293,23 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             }
             if !yes {
                 let answer = ask(&format!(
-                    "Train {} on {} for {} credit (balance {})? The credit comes back if it does not beat Jev. [y/N] ",
+                    "Train {} on {} for {} credit (balance {})? {}. [y/N] ",
                     q["name"].as_str().unwrap_or(dataset),
                     q["base_model"].as_str().unwrap_or(base),
                     q["cost_credits"],
-                    q["balance"]
+                    q["balance"],
+                    if *keep_if_loses {
+                        "No refund if it does not beat Jev: it is delivered anyway"
+                    } else {
+                        "The credit comes back if it does not beat Jev"
+                    }
                 ))?;
                 if !matches!(answer.to_lowercase().as_str(), "y" | "yes" | "s" | "sim" | "si") {
                     println!("Nothing spent.");
                     return Ok(ExitCode::SUCCESS);
                 }
             }
-            let m = flow::start(&api, dataset, base).await?;
+            let m = flow::start(&api, dataset, base, *keep_if_loses).await?;
             let id = m["id"].as_str().unwrap_or("").to_owned();
             if *follow {
                 return watch(&api, &id, json).await;
@@ -423,6 +431,7 @@ fn result(m: &Value) {
     }
     match model["verdict"].as_str() {
         Some("beats") => println!("Verdict: beats Jev."),
+        Some("kept") => println!("Verdict: did not beat Jev; kept as asked, no refund."),
         Some(_) => println!("Verdict: did not beat Jev; the credit came back."),
         None => {}
     }

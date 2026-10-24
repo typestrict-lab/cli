@@ -24,6 +24,7 @@ use crate::flow;
 struct Quote {
     dataset: String,
     encoder: String,
+    keep_if_loses: bool,
     until: Instant,
 }
 
@@ -157,6 +158,9 @@ pub struct QuoteArgs {
     pub dataset: String,
     /// The base model (list_base_models); ts-moberto-150m by default.
     pub encoder: Option<String>,
+    /// Only when the user asks for it: keep the model even if it does not beat Jev. It is then delivered and there is NO
+    /// refund (only a failed training is refunded). Tell the user this before they agree.
+    pub keep_if_loses: Option<bool>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -359,7 +363,8 @@ user upload them at https://typestrict.ai/trainings/new and continue from list_t
     ) -> Result<CallToolResult, McpError> {
         let api = self.api(&ctx)?;
         let encoder = a.encoder.unwrap_or_else(|| flow::DEFAULT_ENCODER.to_owned());
-        match flow::quote(&api, &a.dataset, &encoder).await {
+        let keep_if_loses = a.keep_if_loses == Some(true);
+        match flow::quote(&api, &a.dataset, &encoder, keep_if_loses).await {
             Ok(mut q) => {
                 let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
                 let confirmation = format!("q{nanos:x}");
@@ -367,7 +372,12 @@ user upload them at https://typestrict.ai/trainings/new and continue from list_t
                 quotes.retain(|_, q| q.until > Instant::now());
                 quotes.insert(
                     confirmation.clone(),
-                    Quote { dataset: a.dataset, encoder, until: Instant::now() + Duration::from_secs(600) },
+                    Quote {
+                        dataset: a.dataset,
+                        encoder,
+                        keep_if_loses,
+                        until: Instant::now() + Duration::from_secs(600),
+                    },
                 );
                 q["confirmation"] = json!(confirmation);
                 ok(q)
@@ -389,10 +399,10 @@ user upload them at https://typestrict.ai/trainings/new and continue from list_t
         let quote = self.quotes.lock().unwrap().remove(&a.confirmation);
         let Some(q) = quote.filter(|q| q.until > Instant::now()) else {
             return failed(anyhow::anyhow!(
-                "no valid quote for this confirmation: call quote_training again and ask the user"
+                "no valid quote for this confirmation (a quote lasts 10 minutes): call quote_training again and ask the user"
             ));
         };
-        step!(flow::start(&api, &q.dataset, &q.encoder).await)
+        step!(flow::start(&api, &q.dataset, &q.encoder, q.keep_if_loses).await)
     }
 
     #[tool(
@@ -447,7 +457,8 @@ or the credit comes back. Drive each training by its `next_action` (get_training
 pick_decisions, label_examples, start_training, retry, download, none, start_over, expired. Show the user the agent's proposal \
 (get_training: structure.spec and structure.stats) before training. Starting a training costs a credit: call quote_training, tell the \
 user the cost and balance, and only call start_training with the quote's confirmation after the user agrees. \
-Docs for assistants: https://docs.typestrict.ai/llms-full.txt"
+Only if the user asks to keep the model even when it does not beat Jev, quote with keep_if_loses: that model is delivered and \
+there is no refund (verdict `kept`); say so before they agree. Docs for assistants: https://docs.typestrict.ai/llms-full.txt"
 )]
 impl ServerHandler for Server {}
 
