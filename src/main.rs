@@ -114,12 +114,16 @@ enum Command {
     },
     /// The result of a model against Jev.
     Result { model: String },
-    /// Download a model's package (decision_ai.json, tokenizer.json, onnx/model_8bit.onnx).
+    /// Download a model's package (decision_ai.json, tokenizer.json, onnx/model_8bit.onnx), or its container image.
     Pull {
         model: String,
-        /// Where to save it (./<name>-v<version> by default).
+        /// Where to save it (./<name>-v<version> by default; with --container, ./<name>-v<version>.tar).
         #[arg(long)]
         dir: Option<PathBuf>,
+        /// The container image instead: the model behind the Jev API (`POST /v1/systemone`), loaded into Docker when it
+        /// is installed.
+        #[arg(long)]
+        container: bool,
     },
     /// The typestrict MCP server over stdio, for Claude Code, Cursor, Codex and other assistants.
     Mcp,
@@ -139,6 +143,20 @@ async fn main() -> ExitCode {
 
 fn api(cli: &Cli) -> Result<Api> {
     Api::new(&cli.api_url, &config::key()?)
+}
+
+/// `docker load -i` the image when Docker is installed, and its tag from what Docker printed (`Loaded image: <tag>`).
+fn docker_load(path: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("docker").arg("load").arg("-i").arg(path).output().ok()?;
+    if !out.status.success() {
+        eprintln!("docker load failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        return None;
+    }
+    loaded_tag(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn loaded_tag(docker_out: &str) -> Option<String> {
+    docker_out.lines().find_map(|l| l.strip_prefix("Loaded image: ")).map(|t| t.trim().to_owned())
 }
 
 fn print(json: bool, v: &Value, human: impl FnOnce()) {
@@ -322,12 +340,24 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             let m = api(&cli)?.get(&format!("/v1/models/{model}")).await?;
             print(json, &m, || result(&m));
         }
-        Command::Pull { model, dir } => {
+        Command::Pull { model, dir, container } => {
             let api = api(&cli)?;
             let m = api.get(&format!("/v1/models/{model}")).await?;
-            let dir = dir.clone().unwrap_or_else(|| {
-                PathBuf::from(format!("{}-v{}", m["model"]["name"].as_str().unwrap_or("model"), m["model"]["version"]))
-            });
+            let stem = format!("{}-v{}", m["model"]["name"].as_str().unwrap_or("model"), m["model"]["version"]);
+            if *container {
+                let path = dir.clone().unwrap_or_else(|| PathBuf::from(format!("{stem}.tar")));
+                flow::download_container(&api, model, &path).await?;
+                let image = docker_load(&path);
+                print(json, &json!({ "file": path, "image": image }), || {
+                    println!("saved {}", path.display());
+                    match &image {
+                        Some(tag) => println!("loaded {tag}\nrun it: docker run -p 8080:8080 {tag}"),
+                        None => println!("load it: docker load -i {}", path.display()),
+                    }
+                });
+                return Ok(ExitCode::SUCCESS);
+            }
+            let dir = dir.clone().unwrap_or_else(|| PathBuf::from(stem));
             let files = flow::download(&api, model, &dir).await?;
             print(json, &json!({ "files": files }), || {
                 for f in &files {
@@ -437,5 +467,20 @@ fn result(m: &Value) {
     }
     if let Some(until) = model["files_expire_at"].as_str().filter(|_| model["files_deleted_at"].is_null()) {
         println!("Download with `typestrict pull {}` until {until}.", model["id"].as_str().unwrap_or(""));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::loaded_tag;
+
+    #[test]
+    fn the_tag_comes_from_what_docker_load_printed() {
+        assert_eq!(
+            loaded_tag("Loaded image: typestrict/ticket-router:3\n").as_deref(),
+            Some("typestrict/ticket-router:3")
+        );
+        assert_eq!(loaded_tag("abc: Loading layer  1.2MB/1.2MB\nLoaded image: x:1"), Some("x:1".into()));
+        assert_eq!(loaded_tag("nothing here"), None);
     }
 }

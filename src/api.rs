@@ -88,6 +88,22 @@ impl Api {
         Ok(())
     }
 
+    /// Downloads a presigned link straight to a file, chunk by chunk: a container image is hundreds of MB.
+    pub async fn download_to(&self, url: &str, path: &std::path::Path) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        let mut res = self.http.get(url).timeout(Duration::from_secs(3600)).send().await?;
+        if !res.status().is_success() {
+            bail!("download failed: {}", res.status());
+        }
+        let mut file =
+            tokio::fs::File::create(path).await.with_context(|| format!("could not write {}", path.display()))?;
+        while let Some(chunk) = res.chunk().await? {
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        Ok(())
+    }
+
     /// Downloads a presigned link.
     pub async fn download(&self, url: &str) -> Result<Vec<u8>> {
         let res = self.http.get(url).timeout(Duration::from_secs(1800)).send().await?;

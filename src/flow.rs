@@ -276,6 +276,18 @@ pub async fn download(api: &Api, model: &str, dir: &Path) -> Result<Vec<PathBuf>
     Ok(written)
 }
 
+/// Saves the model's container image (a `docker load` tar: the serving runtime with the model inside) at `path`.
+pub async fn download_container(api: &Api, model: &str, path: &Path) -> Result<()> {
+    let files = api.get(&format!("/v1/models/{model}/files")).await?;
+    let url = files["container.tar"]
+        .as_str()
+        .context("this model has no container image yet; its ONNX package is ready with `typestrict pull`")?;
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    api.download_to(url, path).await
+}
+
 /// The short story of a training for people: its step and what it needs next.
 pub fn describe(t: &Value) -> String {
     let steps = ["data", "review", "base model", "training", "result"];

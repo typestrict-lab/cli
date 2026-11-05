@@ -21,6 +21,7 @@ typestrict label <dataset>                         # when asked, answer the held
 typestrict run <dataset> --watch                   # shows the cost and asks before spending the credit
 typestrict result <model>                          # the verdict against Jev
 typestrict pull <model>                            # decision_ai.json, tokenizer.json, onnx/model_8bit.onnx
+typestrict pull <model> --container                # the container image, loaded into Docker: POST /v1/systemone like Jev
 ```
 
 `typestrict status` lists every training with its step and what it needs next; `status <id> --watch` follows one and
