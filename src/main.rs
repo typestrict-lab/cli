@@ -117,13 +117,17 @@ enum Command {
     /// Download a model's package (decision_ai.json, tokenizer.json, onnx/model_8bit.onnx), or its container image.
     Pull {
         model: String,
-        /// Where to save it (./<name>-v<version> by default; with --container, ./<name>-v<version>.tar).
+        /// Where to save it (./<name>-v<version> by default; with --container, ./<name>-v<version>-<arch>.tar).
         #[arg(long)]
         dir: Option<PathBuf>,
         /// The container image instead: the model behind the Jev API (`POST /v1/systemone`), loaded into Docker when it
         /// is installed.
         #[arg(long)]
         container: bool,
+        /// With --container, the image's platform: linux/amd64 (x86 servers, Cloud Run, Lambda) or linux/arm64 (Apple
+        /// Silicon, Graviton). This machine's by default.
+        #[arg(long, requires = "container")]
+        platform: Option<String>,
     },
     /// The typestrict MCP server over stdio, for Claude Code, Cursor, Codex and other assistants.
     Mcp,
@@ -340,16 +344,19 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             let m = api(&cli)?.get(&format!("/v1/models/{model}")).await?;
             print(json, &m, || result(&m));
         }
-        Command::Pull { model, dir, container } => {
+        Command::Pull { model, dir, container, platform } => {
             let api = api(&cli)?;
             let m = api.get(&format!("/v1/models/{model}")).await?;
             let stem = format!("{}-v{}", m["model"]["name"].as_str().unwrap_or("model"), m["model"]["version"]);
             if *container {
-                let path = dir.clone().unwrap_or_else(|| PathBuf::from(format!("{stem}.tar")));
-                flow::download_container(&api, model, &path).await?;
-                let image = docker_load(&path);
-                print(json, &json!({ "file": path, "image": image }), || {
-                    println!("saved {}", path.display());
+                let platform = platform.as_deref().unwrap_or(flow::host_platform());
+                let arch = platform.rsplit('/').next().unwrap_or("image");
+                let path = dir.clone().unwrap_or_else(|| PathBuf::from(format!("{stem}-{arch}.tar")));
+                flow::download_container(&api, model, platform, &path).await?;
+                // Docker loads an image of another platform, but runs it only under an emulator.
+                let image = if platform == flow::host_platform() { docker_load(&path) } else { None };
+                print(json, &json!({ "file": path, "platform": platform, "image": image }), || {
+                    println!("saved {} ({platform})", path.display());
                     match &image {
                         Some(tag) => println!("loaded {tag}\nrun it: docker run -p 8080:8080 {tag}"),
                         None => println!("load it: docker load -i {}", path.display()),

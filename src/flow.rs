@@ -276,12 +276,26 @@ pub async fn download(api: &Api, model: &str, dir: &Path) -> Result<Vec<PathBuf>
     Ok(written)
 }
 
-/// Saves the model's container image (a `docker load` tar: the serving runtime with the model inside) at `path`.
-pub async fn download_container(api: &Api, model: &str, path: &Path) -> Result<()> {
-    let files = api.get(&format!("/v1/models/{model}/files")).await?;
-    let url = files["container.tar"]
-        .as_str()
-        .context("this model has no container image yet; its ONNX package is ready with `typestrict pull`")?;
+/// The container platform of this machine (linux/arm64 on Apple Silicon and ARM servers, linux/amd64 otherwise): Docker
+/// runs Linux of the host's architecture, and the other one would need an emulator.
+pub fn host_platform() -> &'static str {
+    platform_of(std::env::consts::ARCH)
+}
+
+fn platform_of(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" | "arm64" => "linux/arm64",
+        _ => "linux/amd64",
+    }
+}
+
+/// Saves the model's container image for `platform` (a `docker load` tar: the serving runtime with the model inside) at
+/// `path`.
+pub async fn download_container(api: &Api, model: &str, platform: &str, path: &Path) -> Result<()> {
+    let link = api.get(&format!("/v1/models/{model}/container?platform={platform}")).await.with_context(|| {
+        format!("this model has no {platform} container image yet; its ONNX package is ready with `typestrict pull`")
+    })?;
+    let url = link["url"].as_str().context("the API answered no link to the container image")?;
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
@@ -320,6 +334,12 @@ pub fn describe(t: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_container_platform_follows_the_machine() {
+        assert_eq!(super::platform_of("aarch64"), "linux/arm64");
+        assert_eq!(super::platform_of("x86_64"), "linux/amd64");
+    }
+
     #[test]
     fn a_training_read_drops_the_repeats() {
         let task = json!({ "kind": "noul", "sql": "SELECT 1" });
